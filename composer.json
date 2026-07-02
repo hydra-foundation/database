@@ -1,5 +1,5 @@
 {
-    "name": "hydra/database",
+    "name": "hydrakit/database",
     "description": "Database library for Hydra PHP framework",
     "type": "library",
     "license": "MIT",
