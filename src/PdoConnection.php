@@ -6,6 +6,7 @@ namespace Hydra\Database;
 
 use Hydra\Database\Contracts\ConnectionInterface;
 use PDO;
+use PDOException;
 
 /**
  * PDO-backed {@see ConnectionInterface}.
@@ -14,10 +15,30 @@ use PDO;
  * reach the driver as bound parameters — the connection has no string-built
  * SQL path. The PDO is constructed elsewhere (the service provider) so this
  * class stays driver-agnostic and trivially testable against sqlite.
+ *
+ * The constructor enforces this class's own security preconditions instead of
+ * trusting every app's PDO construction: without ERRMODE_EXCEPTION, failed
+ * queries are silently invisible; and with pdo_mysql's default
+ * ATTR_EMULATE_PREPARES=true, "prepared" statements are client-side string
+ * interpolation — the values never reach the server as bound parameters, which
+ * would quietly void the guarantee in the paragraph above. Some drivers
+ * (sqlite among them) don't support toggling emulation at all, so that
+ * setAttribute is best-effort: where the driver refuses, its prepares are
+ * already server-side (non-emulated) and the guarantee holds anyway.
  */
 final class PdoConnection implements ConnectionInterface
 {
-    public function __construct(private readonly PDO $pdo) {}
+    public function __construct(private readonly PDO $pdo)
+    {
+        $this->pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+
+        try {
+            $this->pdo->setAttribute(PDO::ATTR_EMULATE_PREPARES, false);
+        } catch (PDOException) {
+            // Driver doesn't support the attribute (e.g. sqlite, whose
+            // prepares are always real) — tolerated, see class docblock.
+        }
+    }
 
     public function select(string $sql, array $params = []): array
     {

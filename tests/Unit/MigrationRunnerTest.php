@@ -6,7 +6,9 @@ namespace Hydra\Database\Tests\Unit;
 
 use Hydra\Database\MigrationRunner;
 use PDO;
+use PDOException;
 use PHPUnit\Framework\TestCase;
+use RuntimeException;
 
 /**
  * MigrationRunner against an in-memory sqlite PDO (the test driver) and a
@@ -32,6 +34,7 @@ final class MigrationRunnerTest extends TestCase
     protected function tearDown(): void
     {
         foreach (glob($this->dir . '/*') ?: [] as $file) {
+            chmod($file, 0o644); // undo the unreadable-file test's chmod
             unlink($file);
         }
         rmdir($this->dir);
@@ -138,5 +141,85 @@ final class MigrationRunnerTest extends TestCase
     public function testStatusOnEmptyDirectoryIsEmpty(): void
     {
         $this->assertSame([], $this->runner()->status());
+    }
+
+    public function testFailingMigrationThrowsAndIsNotRecordedAndHaltsLaterFiles(): void
+    {
+        $this->writeMigration('20260101_000000_bad.sql', 'CREATE BOGUS this is not sql');
+        $this->writeMigration('20260102_000000_create_b.sql', 'CREATE TABLE b (id INTEGER PRIMARY KEY)');
+
+        $runner = $this->runner();
+
+        try {
+            $runner->run();
+            $this->fail('Expected the failing migration to throw');
+        } catch (PDOException) {
+            // expected
+        }
+
+        // Neither file is recorded as applied — the bad one failed, the good
+        // one never ran on top of the broken state.
+        $this->assertSame(
+            [
+                ['filename' => '20260101_000000_bad.sql', 'applied' => false],
+                ['filename' => '20260102_000000_create_b.sql', 'applied' => false],
+            ],
+            $runner->status(),
+        );
+
+        // And the later file's DDL really did not execute.
+        $tables = $this->pdo
+            ->query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'b'")
+            ->fetchAll(PDO::FETCH_COLUMN);
+        $this->assertSame([], $tables);
+    }
+
+    public function testUnreadableMigrationFileThrowsNamingTheFile(): void
+    {
+        $this->writeMigration('20260101_000000_locked.sql', 'CREATE TABLE a (id INTEGER PRIMARY KEY)');
+        chmod($this->dir . '/20260101_000000_locked.sql', 0o000);
+
+        if (is_readable($this->dir . '/20260101_000000_locked.sql')) {
+            $this->markTestSkipped('Running as a user that ignores file permissions (root)');
+        }
+
+        $runner = $this->runner();
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('20260101_000000_locked.sql');
+
+        $runner->run();
+    }
+
+    public function testFailedRunLeavesTheFilePendingSoAFixedVersionReruns(): void
+    {
+        $this->writeMigration('20260101_000000_create_a.sql', 'CREATE BOGUS this is not sql');
+        $runner = $this->runner();
+
+        try {
+            $runner->run();
+        } catch (PDOException) {
+            // expected
+        }
+
+        // Fix the file in place; the runner must still consider it pending.
+        $this->writeMigration('20260101_000000_create_a.sql', 'CREATE TABLE a (id INTEGER PRIMARY KEY)');
+
+        $this->assertSame(['20260101_000000_create_a.sql'], $runner->run());
+    }
+
+    public function testConstructorEnforcesExceptionErrorModeOnTheInjectedPdo(): void
+    {
+        $silent = new PDO('sqlite::memory:', null, null, [
+            PDO::ATTR_ERRMODE => PDO::ERRMODE_SILENT,
+        ]);
+
+        $this->writeMigration('20260101_000000_bad.sql', 'CREATE BOGUS this is not sql');
+        $runner = new MigrationRunner($silent, $this->dir, 'sqlite');
+
+        // Under ERRMODE_SILENT this would return false and be recorded as
+        // applied; the constructor must have flipped the handle to exceptions.
+        $this->expectException(PDOException::class);
+        $runner->run();
     }
 }

@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Hydra\Database;
 
 use PDO;
+use PDOException;
+use RuntimeException;
 
 /**
  * Applies raw .sql migration files and records which have run.
@@ -21,12 +23,14 @@ use PDO;
  * that table is skipped on the next run.
  *
  * This class takes the raw PDO rather than {@see Contracts\ConnectionInterface}
- * on purpose: DDL is multi-statement and unparameterised, so it runs through
- * PDO::exec — outside the prepared-statement-only seam the repositories use.
+ * on purpose: DDL is multi-statement and unparameterised — outside the
+ * prepared-statement-only seam the repositories use.
  *
  * Caveat worth knowing: MariaDB has no transactional DDL (DDL implicitly
  * commits), so a migration that fails halfway leaves partial state that cannot
- * be rolled back. Keep each migration to one logical change.
+ * be rolled back. Keep each migration to one logical change. A failed migration
+ * is never recorded as applied, so after fixing the SQL (and any partial state
+ * MariaDB left behind) the same file re-runs.
  */
 final class MigrationRunner
 {
@@ -34,7 +38,13 @@ final class MigrationRunner
         private readonly PDO $pdo,
         private readonly string $migrationsPath,
         private readonly string $driver,
-    ) {}
+    ) {
+        // "Record only after success" is only as strong as the error mode:
+        // under ERRMODE_SILENT a failed statement returns false and the runner
+        // would happily mark the migration applied. Enforce exceptions here
+        // rather than trusting whoever built the PDO.
+        $this->pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    }
 
     /**
      * Apply every pending migration in order and return the filenames applied
@@ -48,13 +58,62 @@ final class MigrationRunner
 
         $applied = [];
         foreach ($this->pending() as $filename) {
-            $sql = file_get_contents($this->migrationsPath . '/' . $filename);
-            $this->pdo->exec($sql);
+            $path = $this->migrationsPath . '/' . $filename;
+            $sql = @file_get_contents($path);
+            if ($sql === false) {
+                throw new RuntimeException("Cannot read migration file: {$path}");
+            }
+
+            // Order matters: execute first, record only once the SQL ran
+            // without error. An exception here aborts the loop, so later
+            // pending files don't run on top of a broken schema either.
+            $this->execute($sql);
             $this->record($filename);
             $applied[] = $filename;
         }
 
         return $applied;
+    }
+
+    /**
+     * Execute one migration file's SQL, surfacing errors from *every*
+     * statement in it.
+     *
+     * On pdo_mysql, PDO::exec() of a multi-statement string reports only the
+     * first statement's errors — a typo in statement 2 would be swallowed and
+     * the file recorded as applied. So we query() and drain the result sets:
+     * each nextRowset() advances to the next statement's result and throws
+     * (ERRMODE_EXCEPTION) if that statement failed.
+     *
+     * sqlite is the mirror image: its query()/prepare() compiles only the
+     * first statement and nextRowset() is unsupported, while its exec() runs
+     * the whole string and reports any failure honestly — so it takes the
+     * plain exec() path.
+     */
+    private function execute(string $sql): void
+    {
+        if ($this->driver === 'sqlite') {
+            $this->pdo->exec($sql);
+
+            return;
+        }
+
+        $statement = $this->pdo->query($sql);
+
+        try {
+            // Drain: each iteration surfaces the next statement's outcome.
+            do {
+            } while ($statement->nextRowset());
+        } catch (PDOException $e) {
+            // A driver that can't advance rowsets at all isn't a migration
+            // failure, just a missing capability (SQLSTATE IM001) — the
+            // first statement's error reporting is the best it offers.
+            if (!str_contains($e->getMessage(), 'does not support')) {
+                throw $e;
+            }
+        } finally {
+            $statement->closeCursor();
+        }
     }
 
     /**
