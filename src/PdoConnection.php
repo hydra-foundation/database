@@ -7,6 +7,7 @@ namespace Hydra\Database;
 use Hydra\Database\Contracts\ConnectionInterface;
 use PDO;
 use PDOException;
+use Throwable;
 
 /**
  * PDO-backed {@see ConnectionInterface}.
@@ -70,5 +71,30 @@ final class PdoConnection implements ConnectionInterface
     public function lastInsertId(): int
     {
         return (int) $this->pdo->lastInsertId();
+    }
+
+    public function transaction(callable $fn): mixed
+    {
+        // Re-entrant: a nested call joins the outer transaction (no savepoints).
+        if ($this->pdo->inTransaction()) {
+            return $fn($this);
+        }
+
+        $this->pdo->beginTransaction();
+
+        try {
+            $result = $fn($this);
+            $this->pdo->commit();
+            return $result;
+        } catch (Throwable $e) {
+            // A server-side abort (deadlock, or MySQL's implicit-commit-on-DDL)
+            // can leave inTransaction() false, and rollBack() would then throw
+            // "no active transaction", masking the real cause. Only roll back a
+            // still-live transaction; always re-throw the original throwable.
+            if ($this->pdo->inTransaction()) {
+                $this->pdo->rollBack();
+            }
+            throw $e;
+        }
     }
 }

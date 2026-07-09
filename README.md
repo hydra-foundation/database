@@ -27,6 +27,32 @@ constructed by the app (with its chosen error mode, fetch mode, prepare
 settings), which keeps this class driver-agnostic and trivially testable against
 in-memory sqlite.
 
+## Transactions
+
+`transaction(callable): mixed` runs the callable inside a transaction and
+returns its value. A clean return commits; any throwable rolls back and
+propagates unchanged, so callers never see a half-applied write:
+
+```php
+$id = $db->transaction(function (ConnectionInterface $db) use ($input) {
+    $db->execute('INSERT INTO orders (user_id) VALUES (?)', [$input->int('user_id')]);
+    $orderId = $db->lastInsertId();
+    $db->execute('INSERT INTO order_events (order_id, event) VALUES (?, ?)', [$orderId, 'created']);
+
+    return $orderId;
+});
+```
+
+Calls are re-entrant: a `transaction()` nested inside another joins the outer
+transaction rather than opening a second (PDO has no true nesting; this seam
+ships no savepoints). The outermost call owns begin/commit/rollback, and a
+throw anywhere inside rolls the whole thing back — so repositories that each
+wrap their own writes compose atomically.
+
+One honest sharp edge: on MySQL/MariaDB, DDL statements (`CREATE`/`ALTER`/
+`DROP`) trigger an implicit commit, so DDL inside `transaction()` is not rolled
+back — the same caveat the migration runner documents.
+
 ## Migrations
 
 `MigrationRunner` applies plain `.sql` files in lexical order and records each in
