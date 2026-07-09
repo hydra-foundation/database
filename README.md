@@ -27,6 +27,16 @@ constructed by the app (with its chosen error mode, fetch mode, prepare
 settings), which keeps this class driver-agnostic and trivially testable against
 in-memory sqlite.
 
+`lastInsertId()` returns a **string** — PDO's native surface — so UUID/string
+primary keys and 64-bit ids beyond `PHP_INT_MAX` on 32-bit builds pass through
+uncorrupted. If your schema uses integer PKs, cast at the call site, where that
+schema assumption actually lives:
+
+```php
+$db->execute('INSERT INTO users (username) VALUES (?)', [$username]);
+$id = (int) $db->lastInsertId(); // this table's PK is an integer — your call
+```
+
 ## Transactions
 
 `transaction(callable): mixed` runs the callable inside a transaction and

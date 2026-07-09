@@ -59,7 +59,10 @@ final class PdoConnectionTest extends TestCase
         $this->db->execute('INSERT INTO widgets (name) VALUES (?)', ['a']);
         $this->db->execute('INSERT INTO widgets (name) VALUES (?)', ['b']);
 
-        $this->assertSame(2, $this->db->lastInsertId());
+        // A string, uncast — PDO's native surface. Regression: an int return
+        // type here would corrupt UUID/string PKs and 64-bit ids on 32-bit
+        // builds; integer-PK callers cast at their own call site.
+        $this->assertSame('2', $this->db->lastInsertId());
     }
 
     public function testParametersAreBoundNotInterpolated(): void
@@ -80,7 +83,7 @@ final class PdoConnectionTest extends TestCase
             return $db->lastInsertId();
         });
 
-        $this->assertSame(2, $id);
+        $this->assertSame('2', $id);
         $this->assertCount(2, $this->db->select('SELECT * FROM widgets'));
     }
 

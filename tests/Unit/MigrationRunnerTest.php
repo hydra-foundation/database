@@ -174,6 +174,40 @@ final class MigrationRunnerTest extends TestCase
         $this->assertSame([], $tables);
     }
 
+    /**
+     * A multi-statement file whose *later* statement fails must surface the
+     * error and stay unrecorded — the 2026-07-06 regression was errors after
+     * the first statement being swallowed and the file marked applied.
+     *
+     * This exercises the sqlite branch of execute() (plain exec(), which runs
+     * the whole string and reports any statement's failure honestly). The
+     * pdo_mysql query()/nextRowset() draining path that the same fix hardened
+     * needs a real MySQL server and cannot be reached from this sqlite harness.
+     */
+    public function testMultiStatementMigrationFailingOnALaterStatementIsNotRecorded(): void
+    {
+        $this->writeMigration(
+            '20260101_000000_multi.sql',
+            "CREATE TABLE ok (id INTEGER PRIMARY KEY);\n"
+            . 'CREATE BOGUS this is not sql;',
+        );
+
+        $runner = $this->runner();
+
+        try {
+            $runner->run();
+            $this->fail('Expected the later failing statement to throw');
+        } catch (PDOException) {
+            // expected — the second statement's error surfaced.
+        }
+
+        // The file is not recorded despite its first statement having run.
+        $this->assertSame(
+            [['filename' => '20260101_000000_multi.sql', 'applied' => false]],
+            $runner->status(),
+        );
+    }
+
     public function testUnreadableMigrationFileThrowsNamingTheFile(): void
     {
         $this->writeMigration('20260101_000000_locked.sql', 'CREATE TABLE a (id INTEGER PRIMARY KEY)');

@@ -68,9 +68,19 @@ final class PdoConnection implements ConnectionInterface
         return $statement->rowCount();
     }
 
-    public function lastInsertId(): int
+    public function lastInsertId(): string
     {
-        return (int) $this->pdo->lastInsertId();
+        // PDO reports the id as a string (or false when the driver has none to
+        // report); passed through uncast so UUID/string PKs and ids beyond
+        // PHP_INT_MAX survive intact — see the interface docblock. The false
+        // case fails loud rather than masquerading as an id.
+        $id = $this->pdo->lastInsertId();
+
+        if ($id === false) {
+            throw new PDOException('The driver reported no last insert id for this connection.');
+        }
+
+        return $id;
     }
 
     public function transaction(callable $fn): mixed
