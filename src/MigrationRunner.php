@@ -9,28 +9,9 @@ use PDOException;
 use RuntimeException;
 
 /**
- * Applies raw .sql migration files and records which have run.
+ * Migration Runner
  *
- * Hydra's migrations are plain .sql — the data-layer equivalent of its
- * hand-written repositories: no ORM, no fluent builder, just SQL. Each file in
- * the migrations directory is a forward-only change; there are no down
- * migrations by design (rollback in production is mostly fiction, and in dev you
- * re-run from scratch with {@see fresh()}).
- *
- * Files are applied in lexical order, so the timestamp prefix the
- * make:migration command writes ({Ymd_His}_name.sql) doubles as the ordering
- * key. A `migrations` table records each applied filename; a file already in
- * that table is skipped on the next run.
- *
- * This class takes the raw PDO rather than {@see Contracts\ConnectionInterface}
- * on purpose: DDL is multi-statement and unparameterised — outside the
- * prepared-statement-only seam the repositories use.
- *
- * Caveat worth knowing: MariaDB has no transactional DDL (DDL implicitly
- * commits), so a migration that fails halfway leaves partial state that cannot
- * be rolled back. Keep each migration to one logical change. A failed migration
- * is never recorded as applied, so after fixing the SQL (and any partial state
- * MariaDB left behind) the same file re-runs.
+ * Applies raw .sql migration files and records which have run
  */
 final class MigrationRunner
 {
@@ -48,9 +29,7 @@ final class MigrationRunner
 
     /**
      * Apply every pending migration in order and return the filenames applied
-     * during this call (empty when already up to date).
-     *
-     * @return list<string>
+     * during this call (empty when already up to date)
      */
     public function run(): array
     {
@@ -76,19 +55,7 @@ final class MigrationRunner
     }
 
     /**
-     * Execute one migration file's SQL, surfacing errors from *every*
-     * statement in it.
-     *
-     * On pdo_mysql, PDO::exec() of a multi-statement string reports only the
-     * first statement's errors — a typo in statement 2 would be swallowed and
-     * the file recorded as applied. So we query() and drain the result sets:
-     * each nextRowset() advances to the next statement's result and throws
-     * (ERRMODE_EXCEPTION) if that statement failed.
-     *
-     * sqlite is the mirror image: its query()/prepare() compiles only the
-     * first statement and nextRowset() is unsupported, while its exec() runs
-     * the whole string and reports any failure honestly — so it takes the
-     * plain exec() path.
+     * Execute one migration file's SQL, surfacing errors from *every* statement in it
      */
     private function execute(string $sql): void
     {
@@ -117,10 +84,8 @@ final class MigrationRunner
     }
 
     /**
-     * Drop every table, then re-apply all migrations from scratch. Destructive —
-     * the calling command guards it. Returns the filenames applied.
-     *
-     * @return list<string>
+     * Drop every table, then re-apply all migrations from scratch.
+     * Destructive — the calling command guards it. Returns the filenames applied.
      */
     public function fresh(): array
     {
@@ -132,8 +97,6 @@ final class MigrationRunner
     /**
      * Every migration on disk paired with whether it has been applied, in
      * order — the data behind migrate:status.
-     *
-     * @return list<array{filename: string, applied: bool}>
      */
     public function status(): array
     {
@@ -142,7 +105,7 @@ final class MigrationRunner
         $applied = $this->appliedFilenames();
 
         return array_map(
-            static fn (string $filename): array => [
+            static fn(string $filename): array => [
                 'filename' => $filename,
                 'applied' => in_array($filename, $applied, true),
             ],
@@ -150,9 +113,8 @@ final class MigrationRunner
         );
     }
 
-    /** Migration files on disk that have not yet been recorded as applied.
-     *
-     * @return list<string>
+    /** 
+     * Migration files on disk that have not yet been recorded as applied
      */
     public function pending(): array
     {
@@ -162,23 +124,24 @@ final class MigrationRunner
 
         return array_values(array_filter(
             $this->migrationFiles(),
-            static fn (string $filename): bool => !in_array($filename, $applied, true),
+            static fn(string $filename): bool => !in_array($filename, $applied, true),
         ));
     }
 
-    /** Create the tracking table if it does not exist. Portable across the
-     *  mysql and sqlite drivers Hydra targets. */
+    /** 
+     * Create the tracking table if it does not exist. 
+     * Portable across the mysql and sqlite drivers Hydra targets. 
+     */
     private function ensureTable(): void
     {
         $this->pdo->exec(
             'CREATE TABLE IF NOT EXISTS migrations ('
-            . ' filename VARCHAR(255) NOT NULL,'
-            . ' applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,'
-            . ' PRIMARY KEY (filename))',
+                . ' filename VARCHAR(255) NOT NULL,'
+                . ' applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,'
+                . ' PRIMARY KEY (filename))',
         );
     }
 
-    /** @return list<string> filenames recorded as applied, in order */
     private function appliedFilenames(): array
     {
         $statement = $this->pdo->query('SELECT filename FROM migrations ORDER BY filename');
@@ -187,7 +150,6 @@ final class MigrationRunner
         return $statement->fetchAll(PDO::FETCH_COLUMN);
     }
 
-    /** @return list<string> *.sql filenames in the migrations directory, sorted */
     private function migrationFiles(): array
     {
         if (!is_dir($this->migrationsPath)) {
